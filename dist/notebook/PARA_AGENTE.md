@@ -63,7 +63,15 @@ Para que PC A navegue por internet a traves de este notebook, este equipo debe:
 1. Reenviar paquetes del adaptador `ipv7` a la interfaz Wi-Fi.
 2. Hacer NAT para que los paquetes privados `10.0.0.0/24` salgan con la IP publica del notebook.
 
-Windows no incluye NAT por linea de comandos de forma sencilla. Las opciones son:
+Windows no incluye NAT por linea de comandos de forma sencilla. La forma directa es
+ejecutar el script incluido, en PowerShell **como administrador**:
+
+```powershell
+.\gateway.ps1            # activa ICS del uplink hacia el adaptador ipv7
+.\gateway.ps1 -Off       # lo revierte
+```
+
+Si prefieres hacerlo a mano, estas son las opciones:
 
 ### Opcion A - Internet Connection Sharing (ICS) - recomendada
 

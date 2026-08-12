@@ -18,6 +18,36 @@ IPv7-SIMBI es una VPN P2P cifrada. Consulta `VPN.md` para entender por qué es d
 3. Ejecuta `./run-first.sh` (pide sudo para el dispositivo TUN).
 4. Para enrutar tráfico por el túnel, corre `sudo ./routes.sh`.
 
+## Navegar por internet a través del túnel
+
+Un nodo actúa de gateway: reenvía el tráfico del túnel a su conexión a internet con NAT.
+
+En el nodo gateway:
+
+```bash
+sudo ./gateway.sh          # Linux (iptables + ip_forward);  --off para revertir
+```
+
+```powershell
+.\gateway.ps1              # Windows, como administrador (ICS);  -Off para revertir
+```
+
+En el otro nodo, manda todo el tráfico por el túnel:
+
+```bash
+sudo ip route replace default dev ipv7                        # Linux
+route add 0.0.0.0 mask 0.0.0.0 10.0.0.1 metric 1              # Windows (como admin)
+```
+
+## Pruebas
+
+Con root en Linux, sin tocar la red del equipo (usa network namespaces):
+
+```bash
+sudo ./test-two-nodes.sh   # ping entre los dos extremos del túnel
+sudo ./test-gateway.sh     # navegación real a internet a través del túnel
+```
+
 ## systemd
 
 Copia `ipv7-simbi.service` a `/etc/systemd/system/`, ajusta `WorkingDirectory` y `ExecStart`, y corre:

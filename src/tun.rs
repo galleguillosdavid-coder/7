@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::net::UdpSocket;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::mpsc;
 use std::thread;
 
@@ -19,26 +19,33 @@ pub fn start_tun(
     let mut config = tun::Configuration::default();
     config.tun_name(name).address(address).netmask(netmask).destination(destination).mtu(mtu).up();
     #[cfg(target_os = "linux")]
-    config.platform_config(|c| c.ensure_root_privileges(true));
+    config.platform_config(|c| {
+        c.ensure_root_privileges(true);
+    });
     let dev = tun::create(&config).expect("tun create");
     let (mut reader, mut writer) = dev.split();
 
     let sender = UdpSocket::bind("0.0.0.0:0").expect("tun sender bind");
-    let send_addr = if router_addr.ip().is_unspecified() { None } else { Some(router_addr) };
+    // Un router en 0.0.0.0 tambien escucha en loopback, que es donde el TUN
+    // entrega sus paquetes.
+    let send_addr = if router_addr.ip().is_unspecified() {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), router_addr.port())
+    } else {
+        router_addr
+    };
     thread::spawn(move || {
         let mut buf = vec![0u8; mtu as usize];
         let mut warned = false;
         loop {
             match reader.read(&mut buf) {
                 Ok(n) => {
-                    if send_addr.is_none() { continue; }
                     let mut pkt = crate::Packet::new(&did_src, &did_dst, &buf[..n], crate::Z_EXPLORADOR, false, 0);
                     pkt.header.pow_signature = nonce;
                     if let Some(k) = key {
-                        pkt.payload = crate::packet::encrypt_payload(&pkt.payload, &k, &pkt.header, &pkt.did_dst);
+                        pkt.payload = crate::packet::encrypt_payload(&pkt.payload, &k);
                         pkt.header.length = pkt.payload.len() as u16;
                     }
-                    if let Err(e) = sender.send_to(&crate::serialize(&pkt), send_addr.unwrap()) {
+                    if let Err(e) = sender.send_to(&crate::serialize(&pkt), send_addr) {
                         if !warned {
                             eprintln!("tun send error: {}", e);
                             warned = true;
