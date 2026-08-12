@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::io;
 use std::net::{SocketAddr, UdpSocket};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use crate::packet::*;
@@ -25,6 +25,34 @@ pub(crate) struct NodeConfig {
     pub(crate) key: Option<[u8; 32]>,
     pub(crate) seen: Arc<Mutex<HashMap<u64, u64>>>,
     pub(crate) seen_window: u64,
+    /// Traza cada paquete del plano de datos. Cuesta caro: solo para depurar.
+    pub(crate) verbose: bool,
+    pub(crate) stats: Arc<Stats>,
+}
+
+#[derive(Default)]
+pub(crate) struct Stats {
+    pub(crate) rx: AtomicU64,
+    pub(crate) tx: AtomicU64,
+    pub(crate) local: AtomicU64,
+    pub(crate) dropped: AtomicU64,
+    pub(crate) bytes_rx: AtomicU64,
+    pub(crate) bytes_tx: AtomicU64,
+}
+
+impl Stats {
+    fn bump(counter: &AtomicU64, n: u64) {
+        counter.fetch_add(n, Ordering::Relaxed);
+    }
+}
+
+/// Traza del plano de datos: no formatea nada si `verbose` está apagado.
+macro_rules! trace {
+    ($cfg:expr, $log:expr, $($arg:tt)*) => {
+        if $cfg.verbose {
+            $log.send(format!($($arg)*)).ok();
+        }
+    };
 }
 
 fn find_in_port(cfg: &NodeConfig, from: SocketAddr) -> u8 {
@@ -45,15 +73,12 @@ fn peer_addr(cfg: &NodeConfig, port: u8) -> Option<SocketAddr> {
     cfg.peers.get(&port).copied().or_else(|| cfg.dynamic.lock().unwrap().get(&port).copied())
 }
 
-fn encrypt_packet(pkt: &Packet, key: &[u8; 32]) -> Packet {
-    let mut out = pkt.clone();
-    out.payload = encrypt_payload(&pkt.payload, key);
-    out.header.length = out.payload.len() as u16;
-    out
-}
-
-fn out_pkt(cfg: &NodeConfig, pkt: &Packet) -> Packet {
-    cfg.key.map(|k| encrypt_packet(pkt, &k)).unwrap_or(pkt.clone())
+/// Bytes listos para la red: cifra el payload sin duplicar el paquete.
+fn wire_bytes(key: Option<[u8; 32]>, pkt: &Packet) -> Vec<u8> {
+    match key {
+        Some(k) => serialize_with(pkt, &encrypt_payload(&pkt.payload, &k)),
+        None => serialize(pkt),
+    }
 }
 
 fn forward(cfg: &NodeConfig, socket: &UdpSocket, pkt: Packet, out_port: u8, log: &mpsc::Sender<String>, reason: &str) -> Option<Packet> {
@@ -62,15 +87,17 @@ fn forward(cfg: &NodeConfig, socket: &UdpSocket, pkt: Packet, out_port: u8, log:
         return Some(pkt);
     }
     if let Some(addr) = peer_addr(cfg, out_port) {
-        let out = cfg.key.map(|k| encrypt_packet(&pkt, &k)).unwrap_or(pkt.clone());
-        if let Err(e) = socket.send_to(&serialize(&out), addr) {
+        let bytes = wire_bytes(cfg.key, &pkt);
+        if let Err(e) = socket.send_to(&bytes, addr) {
             log.send(format!("[{}] error envío a {}: {}", cfg.id, addr, e)).ok();
             return Some(pkt);
         }
-        log.send(format!("[{}] {} -> puerto {} ({})", cfg.id, out.did_dst, out_port, reason)).ok();
+        Stats::bump(&cfg.stats.tx, 1);
+        Stats::bump(&cfg.stats.bytes_tx, bytes.len() as u64);
+        trace!(cfg, log, "[{}] {} -> puerto {} ({})", cfg.id, pkt.did_dst, out_port, reason);
         None
     } else {
-        log.send(format!("[{}] {} entregado localmente", cfg.id, pkt.did_dst)).ok();
+        trace!(cfg, log, "[{}] {} entregado localmente", cfg.id, pkt.did_dst);
         None
     }
 }
@@ -120,12 +147,13 @@ fn process(cfg: &NodeConfig, socket: &UdpSocket, mut pkt: Packet, from: SocketAd
         cfg.unverified_mask
     };
     if !verify_pow(pkt.header.pow_signature, cfg.nonce, mask) {
+        Stats::bump(&cfg.stats.dropped, 1);
         log.send(format!("[{}] PoW rechazado de {} para {}", cfg.id, pkt.did_src, pkt.did_dst)).ok();
         return;
     }
 
     let _sig = pos_sign(&cfg.id, &pkt.did_dst, cfg.secret);
-    log.send(format!("[{}] PoS firmado para {} (latencia {}ms)", cfg.id, pkt.did_dst, now() % 1000)).ok();
+    trace!(cfg, log, "[{}] PoS firmado para {}", cfg.id, pkt.did_dst);
 
     let in_port = find_in_port(cfg, from);
     if in_port != 0xFF {
@@ -139,6 +167,7 @@ fn process(cfg: &NodeConfig, socket: &UdpSocket, mut pkt: Packet, from: SocketAd
                 pkt.payload = plain;
             }
             None => {
+                Stats::bump(&cfg.stats.dropped, 1);
                 log.send(format!("[{}] descifrado fallido de {}", cfg.id, pkt.did_src)).ok();
                 return;
             }
@@ -148,6 +177,7 @@ fn process(cfg: &NodeConfig, socket: &UdpSocket, mut pkt: Packet, from: SocketAd
     let mut seen = cfg.seen.lock().unwrap();
     if let Some(ts) = seen.get(&nonce_id) {
         if now_ts.saturating_sub(*ts) < cfg.seen_window {
+            Stats::bump(&cfg.stats.dropped, 1);
             log.send(format!("[{}] REPLAY detectado de {}", cfg.id, pkt.did_src)).ok();
             return;
         }
@@ -160,7 +190,8 @@ fn process(cfg: &NodeConfig, socket: &UdpSocket, mut pkt: Packet, from: SocketAd
     drop(seen);
 
     if !pkt.did_dst.is_empty() && pkt.did_dst == cfg.id && is_data(pkt.header.z8) {
-        log.send(format!("[{}] ENTREGADO local: {} bytes de {}", cfg.id, pkt.payload.len(), pkt.did_src)).ok();
+        Stats::bump(&cfg.stats.local, 1);
+        trace!(cfg, log, "[{}] ENTREGADO local: {} bytes de {}", cfg.id, pkt.payload.len(), pkt.did_src);
         data.send(pkt.payload).ok();
         return;
     }
@@ -194,12 +225,13 @@ fn process(cfg: &NodeConfig, socket: &UdpSocket, mut pkt: Packet, from: SocketAd
             pkt.hops_remaining -= 1;
             if let Some(port) = resolve_heat(cfg, &pkt.did_dst) {
                 if port == 0 {
+                    Stats::bump(&cfg.stats.local, 1);
+                    trace!(cfg, log, "[{}] ENTREGADO Explorador: {}", cfg.id, pkt.did_dst);
                     data.send(pkt.payload).ok();
-                    log.send(format!("[{}] ENTREGADO Explorador: {}", cfg.id, pkt.did_dst)).ok();
                 } else if port != in_port {
                     let _ = forward(cfg, socket, pkt, port, log, "Explorador gravitacional");
                 } else {
-                    log.send(format!("[{}] Explorador evita remolino", cfg.id)).ok();
+                    trace!(cfg, log, "[{}] Explorador evita remolino", cfg.id);
                 }
             } else {
                 let peers: Vec<u8> = cfg.peers.keys().copied().filter(|p| *p != in_port).collect();
@@ -278,7 +310,7 @@ fn process(cfg: &NodeConfig, socket: &UdpSocket, mut pkt: Packet, from: SocketAd
                     let payload = addr.to_string().into_bytes();
                     let mut resp = Packet::new(&cfg.id, &pkt.did_src, &payload, Z_RESOLVE, false, 0);
                     resp.header.pow_signature = cfg.nonce;
-                    let _ = socket.send_to(&serialize(&out_pkt(cfg, &resp)), from);
+                    let _ = socket.send_to(&wire_bytes(cfg.key, &resp), from);
                     log.send(format!("[{}] LOOKUP {} -> {}", cfg.id, pkt.did_dst, addr)).ok();
                 } else {
                     log.send(format!("[{}] LOOKUP {} no encontrado", cfg.id, pkt.did_dst)).ok();
@@ -307,29 +339,38 @@ pub(crate) fn node_loop(
     control: mpsc::Receiver<(Packet, SocketAddr)>,
 ) {
     let socket = UdpSocket::bind(cfg.bind).expect("bind");
-    socket.set_nonblocking(true).expect("nonblocking");
     log.send(format!("[{}] escuchando {}", cfg.id, cfg.bind)).ok();
-    let mut buf = [0u8; 4096];
-    loop {
-        match socket.recv_from(&mut buf) {
-            Ok((n, from)) => {
-                if let Some(pkt) = parse(&buf[..n]) {
-                    process(&cfg, &socket, pkt, from, &log, &data);
-                } else {
-                    log.send(format!("[{}] paquete corrupto o CRC-16 rechazado", cfg.id)).ok();
-                }
-            }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-            Err(e) => {
-                log.send(format!("[{}] recv error: {}", cfg.id, e)).ok();
-            }
-        }
-        while let Ok((pkt, to)) = control.try_recv() {
-            if let Err(e) = socket.send_to(&serialize(&out_pkt(&cfg, &pkt)), to) {
+
+    // El plano de control usa su propio hilo para que la recepcion pueda
+    // bloquearse: sondear con dormidas agrega latencia a cada salto.
+    let key = cfg.key;
+    let ctrl_socket = socket.try_clone().expect("clone socket");
+    std::thread::spawn(move || {
+        while let Ok((pkt, to)) = control.recv() {
+            if let Err(e) = ctrl_socket.send_to(&wire_bytes(key, &pkt), to) {
                 eprintln!("control send error: {}", e);
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+    });
+
+    let mut buf = [0u8; 65535];
+    loop {
+        match socket.recv_from(&mut buf) {
+            Ok((n, from)) => {
+                Stats::bump(&cfg.stats.rx, 1);
+                Stats::bump(&cfg.stats.bytes_rx, n as u64);
+                if let Some(pkt) = parse(&buf[..n]) {
+                    process(&cfg, &socket, pkt, from, &log, &data);
+                } else {
+                    Stats::bump(&cfg.stats.dropped, 1);
+                    log.send(format!("[{}] paquete corrupto o CRC-16 rechazado", cfg.id)).ok();
+                }
+            }
+            Err(e) => {
+                log.send(format!("[{}] recv error: {}", cfg.id, e)).ok();
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
     }
 }
 
