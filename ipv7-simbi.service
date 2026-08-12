@@ -1,0 +1,13 @@
+[Unit]
+Description=IPv7-SIMBI P2P overlay node
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ipv7-simbi
+ExecStart=/opt/ipv7-simbi/ipv7_simbi
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

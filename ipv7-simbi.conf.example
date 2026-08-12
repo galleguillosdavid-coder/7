@@ -1,0 +1,43 @@
+# IPv7-SIMBI configuración de ejemplo
+# Renombrar a ipv7-simbi.conf y ajustar a tu red.
+# Las variables de entorno tienen prioridad sobre este archivo.
+
+# Identidad del nodo
+IPV7_NODE_ID = "A"
+
+# Dirección UDP donde escucha el router
+IPV7_BIND = "0.0.0.0:9001"
+
+# Pares estáticos: puerto_lógico:dirección
+IPV7_PEERS = "2:127.0.0.1:9002"
+
+# Mapa de calor: prefijo_DID:puertos_lógicos
+IPV7_HEAT = "B:2"
+
+# Nonce y máscaras PoW
+IPV7_NONCE = "0xA5"
+
+# Clave precompartida para cifrado ChaCha20-Poly1305 (todos los nodos deben usar la misma)
+IPV7_PSK = "cambia-esta-clave-por-una-larga-y-aleatoria"
+
+# Servidor STUN para descubrir IP/puerto público
+IPV7_STUN_SERVER = "stun.l.google.com:19302"
+
+# Tracker para descubrir peers
+IPV7_TRACKER_ADDR = "127.0.0.1:9000"
+
+# DID del otro extremo (para TUN y hole punching)
+IPV7_TUNNEL_DST = "B"
+
+# Nombre del adaptador TUN a crear (Windows: requiere wintun.dll)
+IPV7_TUNNEL_BIND = "ipv7"
+
+# Interfaz TUN (dejar en blanco para no usar TUN)
+IPV7_TUN_DEVICE = "ipv7"
+IPV7_TUN_ADDR = "10.0.0.2"
+IPV7_TUN_NETMASK = "255.255.255.0"
+IPV7_TUN_DEST = "10.0.0.1"
+IPV7_TUN_MTU = "1400"
+
+# Archivo de logs
+IPV7_LOG = "ipv7-simbi.log"
