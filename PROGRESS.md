@@ -75,7 +75,33 @@ Este archivo resume lo que ya está implementado y lo que falta para tener una a
 - [ ] MTU discovery real por ruta — *futuro*.
 - [ ] IPv6 sobre IPv7-SIMBI — *futuro*.
 
-## Fase 7 — Escalabilidad y producción (FUTURO)
+## Fase 7 — Rendimiento y panel (COMPLETADO)
+
+- [x] Recepción bloqueante en el router: se eliminó el sondeo con `sleep(5ms)`, que era el grueso del RTT.
+- [x] Plano de control en su propio hilo, para que el plano de datos pueda bloquearse.
+- [x] Log por paquete detrás de `IPV7_VERBOSE`; por defecto sólo errores y eventos de ciclo de vida.
+- [x] Serialización sin clonar el paquete al cifrar (`serialize_with`).
+- [x] Contadores atómicos (rx/tx/entregados/descartados/bytes).
+- [x] Panel de estado en `http://127.0.0.1:7777` (`src/ui.rs`, sin dependencias nuevas).
+
+Medido con dos nodos en netns sobre veth:
+
+| | RTT medio | iperf3 |
+|---|---|---|
+| antes | 12.99 ms | 1.29 Mbit/s |
+| después | 0.53 ms | 67.4 Mbit/s |
+
+## Fase 8 — Topología de mundo pequeño (PROPUESTA)
+
+Ver `SEIS-GRADOS.md`. Sin implementar; requiere revisión antes de tocar el enrutamiento.
+
+- [ ] `coord(did)` de 64 bits y distancia en anillo.
+- [ ] Reenvío voraz por distancia en lugar de prefijo textual.
+- [ ] Contactos de anillo (sucesor/predecesor) vía `Z_HELLO`.
+- [ ] Atajos sorteados con probabilidad `1/d` (Kleinberg/Symphony).
+- [ ] Sesgo por latencia y DID derivado de clave pública.
+
+## Fase 9 — Escalabilidad y producción (FUTURO)
 
 - [ ] Forwarding zero-copy con eBPF/XDP o io_uring.
 - [ ] Co-procesador en Verilog/FPGA.

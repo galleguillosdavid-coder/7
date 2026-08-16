@@ -18,6 +18,15 @@ IPv7-SIMBI es una VPN P2P cifrada. Consulta `VPN.md` para entender por qué es d
 3. Ejecuta `./run-first.sh` (pide sudo para el dispositivo TUN).
 4. Para enrutar tráfico por el túnel, corre `sudo ./routes.sh`.
 
+## Panel de estado
+
+Con el nodo corriendo, abre <http://127.0.0.1:7777> para ver pares, RTT,
+contadores de paquetes y las últimas líneas del log. Sólo escucha en loopback.
+Se apaga con `IPV7_UI = "0"` y se cambia de puerto con `IPV7_UI = "8080"`.
+
+Para depurar, `IPV7_VERBOSE = "1"` registra cada paquete. Cuesta rendimiento:
+déjalo apagado en uso normal.
+
 ## Navegar por internet a través del túnel
 
 Un nodo actúa de gateway: reenvía el tráfico del túnel a su conexión a internet con NAT.
