@@ -187,7 +187,8 @@ fn run_node(id: &str, bind: &str) {
         .filter_map(|s| s.trim().parse().ok())
         .collect();
     let public_addr = if let Ok(s) = env::var("IPV7_STUN_SERVER") {
-        resolve_addr(&s).and_then(|srv| stun::discover(srv).ok())
+        let local_bind: SocketAddr = bind.parse().expect("bind");
+        resolve_addr(&s).and_then(|srv| stun::discover(srv, local_bind).ok())
     } else {
         None
     };

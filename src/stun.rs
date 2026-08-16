@@ -10,8 +10,11 @@ const STUN_BINDING_RESPONSE: [u8; 2] = [0x01, 0x01];
 const ATTR_MAPPED_ADDRESS: u16 = 0x0001;
 const ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
 
-pub fn discover(stun_server: SocketAddr) -> io::Result<SocketAddr> {
-    let socket = UdpSocket::bind("0.0.0.0:0")?;
+/// Consulta el mapeo publico del NAT. `local_bind` debe ser la misma direccion
+/// que usa el router: el mapeo de un puerto efimero distinto no sirve para
+/// hole punching ni para registrarse en el tracker.
+pub fn discover(stun_server: SocketAddr, local_bind: SocketAddr) -> io::Result<SocketAddr> {
+    let socket = UdpSocket::bind(local_bind)?;
     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
 
     let ts = now().to_le_bytes();
