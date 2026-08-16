@@ -2,64 +2,63 @@
 
 ## Contexto
 
-Fecha: 2026-08-11
-Objetivo: transformar IPv7-SIMBI de demo localhost en una VPN real usable con doble click en Windows y Linux.
-
-## Resumen de lo hecho
-
-1. **Documentación VPN**
-   - `VPN.md` define el producto como VPN y explica mejoras respecto a IPv4/IPv6.
-   - `MVP.md`, `INSTALL.md`, `DISTRIBUTE.md`, `PROGRESS.md` actualizados.
-
-2. **Asistentes de configuración**
-   - `setup.bat` (Windows) y `setup.sh` (Linux) crean `ipv7-simbi.conf` interactivamente.
-   - `run-first.bat` y `run-first.sh` detectan config, faltantes y privilegios.
-
-3. **Correcciones para el TUN**
-   - Añadido `IPV7_TUNNEL_BIND` en `setup.bat`, `setup.sh`, `ipv7-simbi.conf.example` y config de prueba.
-   - `run-first.bat` ahora avisa si no se ejecuta como administrador.
-   - `tun.rs` evita spam de errores cuando aún no hay peer destino.
-
-4. **Build y pruebas en Windows**
-   - `cargo build --release` exitoso.
-   - `wintun.dll` extraída de `wintun-0.14.1.zip` y colocada junto al `.exe`.
-   - Ejecutado `run-first.bat` con privilegios de administrador:
-     - Adaptador `ipv7` creado y `Up`.
-     - Router UDP escuchando en el puerto configurado.
-   - `ipv7_simbi.exe --help` y `--demo` verificados.
-
-## Archivos clave
-
-- `src/tun.rs` — lógica del adaptador TUN.
-- `src/main.rs` — orquestación de router, TUN, tracker, STUN.
-- `setup.bat` / `setup.sh` — asistentes de configuración.
-- `run-first.bat` / `run-first.sh` — inicio con doble click.
-- `ipv7-simbi.conf.example` — configuración de referencia.
-- `PROGRESS.md` — checklist actualizado.
+Fecha: 2026-08-12
+Objetivo: dejar la VPN funcionando de verdad — tráfico IP real entre dos nodos y
+navegación a internet a través del túnel.
 
 ## Estado actual
 
-- **VPN activada con doble click en Windows.**
-- Build limpio (1 warning por `var` no usado en `src/config.rs`).
-- Adaptador TUN se crea y queda `Up`.
-- Falta probar tráfico real entre dos nodos (requiere peer conocido o tracker).
+- **Túnel verificado extremo a extremo.** `sudo ./test-two-nodes.sh` levanta dos nodos
+  en network namespaces separados y hace ping entre `10.0.0.1` y `10.0.0.2` con 0% de
+  pérdida.
+- **Navegación verificada.** `sudo ./test-gateway.sh` enruta todo el tráfico del nodo A
+  por el túnel; el nodo B hace NAT hacia internet. `ping 8.8.8.8` responde y
+  `curl http://example.com` devuelve `HTTP 200`.
+- Build limpio y sin warnings en Linux y en Windows (`--target x86_64-pc-windows-gnu`).
+  El `ipv7_simbi.exe` del repositorio es el binario nuevo.
+
+## Bugs corregidos en esta sesión
+
+1. **El TUN nunca enviaba nada con `IPV7_BIND = "0.0.0.0:puerto"`.** `tun.rs` descartaba
+   la dirección del router cuando era no especificada. Ahora usa `127.0.0.1:<puerto>`.
+2. **El anti-replay descartaba tráfico legítimo.** El identificador se derivaba solo del
+   encabezado, así que dos paquetes IP distintos del mismo tamaño dentro de 60 s se
+   consideraban un replay: con eso una VPN real no puede funcionar. Ahora el
+   identificador es el nonce único de cada paquete (o un hash de encabezado + payload
+   cuando no hay cifrado), y la caché se poda al superar 8192 entradas.
+3. **Nonce de cifrado reutilizado.** `build_nonce` derivaba el nonce del encabezado y de
+   un timestamp truncado, así que se repetía en todos los paquetes (fatal en
+   ChaCha20-Poly1305) y además cambiaba cada ~4,6 h rompiendo el descifrado. Ahora cada
+   paquete lleva un nonce propio de 12 bytes (semilla de proceso + contador) delante del
+   texto cifrado.
+4. **Sin entrega local.** Un paquete cuyo `did_dst` era el propio nodo solo se entregaba
+   si el mapa de calor tenía una entrada artificial hacia el puerto 0. Ahora se entrega
+   siempre que el DID coincide.
+5. **Nombres DNS en la configuración.** `IPV7_STUN_SERVER = "stun.l.google.com:19302"` se
+   ignoraba en silencio porque se parseaba como `SocketAddr`. `IPV7_PEERS`,
+   `IPV7_TRACKER_ADDR`, `IPV7_TUNNEL_PEER` y el STUN ahora resuelven nombres.
+6. `src/config.rs`: eliminada la función `var` sin uso (el warning de la sesión anterior).
+7. `src/tun.rs`: arreglado el cierre de `platform_config` que ya no compilaba con la
+   versión actual del crate `tun`.
+
+## Novedades
+
+- `gateway.sh` — activa forwarding + NAT en Linux para que el otro extremo navegue.
+- `gateway.ps1` — equivalente en Windows vía ICS (COM `HNetCfg.HNetShare`), con
+  `-Off` para revertir.
+- `test-two-nodes.sh` y `test-gateway.sh` — pruebas reproducibles con netns.
+- `setup.sh` / `setup.bat` ahora preguntan por la dirección del otro nodo y las IPs del
+  túnel, y escriben `IPV7_PEERS` e `IPV7_HEAT` (antes había que editarlos a mano).
 
 ## Cómo continuar
 
-1. Probar entre dos PCs:
-   - PC1 con `IPV7_BIND = "0.0.0.0:9001"` y `IPV7_TUNNEL_DST = "B"`.
-   - PC2 con `IPV7_BIND = "0.0.0.0:9002"` y `IPV7_TUNNEL_DST = "A"`.
-   - Agregar pares con `IPV7_PEERS = "2:<ip-pc2>:9002"` en PC1.
-   - Pings entre `10.0.0.1` y `10.0.0.2`.
-
-2. Limpiar warning de `src/config.rs` (`var` no usado).
-
-3. Considerar añadir `IPV7_TUNNEL_PEER` (dirección del peer para enviar paquetes TUN) o conectarlo al mapa de calor.
-
-4. Empaquetar distribución final siguiendo `DISTRIBUTE.md`.
+1. Probar entre las dos máquinas Windows reales (PC A y notebook B) con el `.exe` nuevo.
+2. En el nodo que hace de gateway, ejecutar `gateway.ps1` como administrador y en el otro
+   `route add 0.0.0.0 mask 0.0.0.0 10.0.0.1 metric 1`.
+3. Roadmap pendiente: relay/TURN para NAT simétrico, handshake Noise sin PSK, DNS interno.
 
 ## Notas
 
-- `wintun.dll` debe copiarse junto a `ipv7_simbi.exe` en el paquete Windows.
+- `wintun.dll` debe estar junto a `ipv7_simbi.exe` en Windows.
 - En Windows, `run-first.bat` requiere **Ejecutar como administrador**.
-- El binario de release se encuentra en `target/release/ipv7_simbi.exe` y también se copia a la raíz del proyecto.
+- Los dos extremos deben usar el mismo `IPV7_PSK` y el mismo `IPV7_NONCE`.

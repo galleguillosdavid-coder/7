@@ -47,7 +47,7 @@ fn peer_addr(cfg: &NodeConfig, port: u8) -> Option<SocketAddr> {
 
 fn encrypt_packet(pkt: &Packet, key: &[u8; 32]) -> Packet {
     let mut out = pkt.clone();
-    out.payload = encrypt_payload(&pkt.payload, key, &pkt.header, &pkt.did_dst);
+    out.payload = encrypt_payload(&pkt.payload, key);
     out.header.length = out.payload.len() as u16;
     out
 }
@@ -73,6 +73,10 @@ fn forward(cfg: &NodeConfig, socket: &UdpSocket, pkt: Packet, out_port: u8, log:
         log.send(format!("[{}] {} entregado localmente", cfg.id, pkt.did_dst)).ok();
         None
     }
+}
+
+fn is_data(z8: u8) -> bool {
+    matches!(z8, Z_TREN_BALA | Z_EXPLORADOR | Z_AUTOCURACION | Z_BIT_FLIP)
 }
 
 fn resolve_heat(cfg: &NodeConfig, did: &str) -> Option<u8> {
@@ -127,17 +131,19 @@ fn process(cfg: &NodeConfig, socket: &UdpSocket, mut pkt: Packet, from: SocketAd
     if in_port != 0xFF {
         cfg.last_seen.lock().unwrap().insert(in_port, now());
     }
+    let nonce_id = replay_id(&pkt, cfg.key.is_some());
     if let Some(key) = cfg.key {
-        match decrypt_payload(&pkt.payload, &key, &pkt.header, &pkt.did_dst) {
-            Some(plain) => pkt.payload = plain,
+        match decrypt_payload(&pkt.payload, &key) {
+            Some(plain) => {
+                pkt.header.length = plain.len() as u16;
+                pkt.payload = plain;
+            }
             None => {
                 log.send(format!("[{}] descifrado fallido de {}", cfg.id, pkt.did_src)).ok();
                 return;
             }
         }
     }
-    let nonce_id = (pkt.header.pack() as u128) + ((fnv1a_32(pkt.did_src.as_bytes()) as u128) << 64);
-    let nonce_id = nonce_id as u64; // truncar a 64 bits
     let now_ts = now();
     let mut seen = cfg.seen.lock().unwrap();
     if let Some(ts) = seen.get(&nonce_id) {
@@ -147,6 +153,17 @@ fn process(cfg: &NodeConfig, socket: &UdpSocket, mut pkt: Packet, from: SocketAd
         }
     }
     seen.insert(nonce_id, now_ts);
+    if seen.len() > 8192 {
+        let window = cfg.seen_window;
+        seen.retain(|_, ts| now_ts.saturating_sub(*ts) < window);
+    }
+    drop(seen);
+
+    if !pkt.did_dst.is_empty() && pkt.did_dst == cfg.id && is_data(pkt.header.z8) {
+        log.send(format!("[{}] ENTREGADO local: {} bytes de {}", cfg.id, pkt.payload.len(), pkt.did_src)).ok();
+        data.send(pkt.payload).ok();
+        return;
+    }
 
     match pkt.header.z8 {
         Z_TREN_BALA => {

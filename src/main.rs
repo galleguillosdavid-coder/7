@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{self, BufRead};
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -18,10 +18,15 @@ use router::*;
 
 fn finish_packet(mut pkt: Packet, key: Option<&[u8; 32]>) -> Packet {
     if let Some(k) = key {
-        pkt.payload = encrypt_payload(&pkt.payload, k, &pkt.header, &pkt.did_dst);
+        pkt.payload = encrypt_payload(&pkt.payload, k);
         pkt.header.length = pkt.payload.len() as u16;
     }
     pkt
+}
+
+/// Resuelve "host:puerto" aceptando nombres DNS ademas de direcciones IP.
+fn resolve_addr(spec: &str) -> Option<SocketAddr> {
+    spec.parse().ok().or_else(|| spec.to_socket_addrs().ok().and_then(|mut it| it.next()))
 }
 
 fn run_demo() {
@@ -132,8 +137,11 @@ fn run_node(id: &str, bind: &str) {
             let part = part.trim();
             if part.is_empty() { continue; }
             if let Some((port, addr)) = part.split_once(':') {
-                if let (Ok(port), Ok(addr)) = (port.parse::<u8>(), addr.parse::<SocketAddr>()) {
-                    peers_map.insert(port, addr);
+                match (port.parse::<u8>(), resolve_addr(addr)) {
+                    (Ok(port), Some(addr)) => {
+                        peers_map.insert(port, addr);
+                    }
+                    _ => eprintln!("[config] par inválido en IPV7_PEERS: {}", part),
                 }
             }
         }
@@ -179,7 +187,7 @@ fn run_node(id: &str, bind: &str) {
         .filter_map(|s| s.trim().parse().ok())
         .collect();
     let public_addr = if let Ok(s) = env::var("IPV7_STUN_SERVER") {
-        s.parse::<SocketAddr>().ok().and_then(|srv| stun::discover(srv).ok())
+        resolve_addr(&s).and_then(|srv| stun::discover(srv).ok())
     } else {
         None
     };
@@ -260,7 +268,7 @@ fn run_node(id: &str, bind: &str) {
         });
     }
     if let Some(t_addr) = tracker_addr {
-        let t_addr: SocketAddr = t_addr.parse().expect("IPV7_TRACKER_ADDR inválida");
+        let t_addr = resolve_addr(&t_addr).expect("IPV7_TRACKER_ADDR inválida");
         thread::spawn(move || {
             let sender = UdpSocket::bind("0.0.0.0:0").expect("tracker client bind");
             loop {
@@ -337,7 +345,7 @@ fn run_node(id: &str, bind: &str) {
             }
         }
     });
-    let tunnel_out = tunnel_peer.as_ref().and_then(|s| s.parse::<SocketAddr>().ok()).map(|peer| {
+    let tunnel_out = tunnel_peer.as_deref().and_then(resolve_addr).map(|peer| {
         let sock = UdpSocket::bind("0.0.0.0:0").expect("tunnel out bind");
         (sock, peer)
     });

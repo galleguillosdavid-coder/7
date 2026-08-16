@@ -23,10 +23,6 @@ pub(crate) fn load_config<P: AsRef<Path>>(path: P) -> HashMap<String, String> {
     cfg
 }
 
-pub(crate) fn var(name: &str, config: &HashMap<String, String>) -> Option<String> {
-    env::var(name).ok().or_else(|| config.get(name).cloned())
-}
-
 pub(crate) fn set_defaults_from_file(path: &str) -> HashMap<String, String> {
     let cfg = load_config(path);
     for (k, v) in &cfg {

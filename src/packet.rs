@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chacha20poly1305::ChaCha20Poly1305;
@@ -15,6 +17,9 @@ pub(crate) const Z_REGISTER: u8 = 8;
 pub(crate) const Z_LOOKUP: u8 = 9;
 pub(crate) const Z_RESOLVE: u8 = 10;
 pub(crate) const Z_HELLO: u8 = 11;
+
+/// Bytes de nonce que se anteponen al texto cifrado.
+pub(crate) const NONCE_LEN: usize = 12;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Ipv7Header {
@@ -132,30 +137,59 @@ pub(crate) fn derive_key(psk: &str) -> [u8; 32] {
     key
 }
 
-fn build_nonce(header: &Ipv7Header, did_dst: &str) -> [u8; 12] {
-    let mut n = [0u8; 12];
-    n[0] = header.sequence;
-    n[1..3].copy_from_slice(&header.anchor.to_be_bytes());
-    let did_hash = fnv1a_32(did_dst.as_bytes());
-    n[3..7].copy_from_slice(&did_hash.to_be_bytes());
-    let ts = now();
-    n[7..12].copy_from_slice(&ts.to_be_bytes()[..5]);
+/// Nonce unico por paquete: 4 bytes de semilla del proceso y contador de 8.
+/// Viaja en claro delante del texto cifrado.
+fn next_nonce() -> [u8; NONCE_LEN] {
+    static SEED: OnceLock<u32> = OnceLock::new();
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let seed = *SEED.get_or_init(|| {
+        let mut buf = now().to_be_bytes().to_vec();
+        buf.extend_from_slice(&std::process::id().to_be_bytes());
+        fnv1a_32(&buf)
+    });
+    let mut n = [0u8; NONCE_LEN];
+    n[0..4].copy_from_slice(&seed.to_be_bytes());
+    n[4..12].copy_from_slice(&COUNTER.fetch_add(1, Ordering::Relaxed).to_be_bytes());
     n
 }
 
-pub(crate) fn encrypt_payload(plaintext: &[u8], key: &[u8; 32], header: &Ipv7Header, did_dst: &str) -> Vec<u8> {
+pub(crate) fn encrypt_payload(plaintext: &[u8], key: &[u8; 32]) -> Vec<u8> {
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
-    let nonce = Nonce::from_slice(&build_nonce(header, did_dst)).to_owned();
+    let raw = next_nonce();
+    let nonce = Nonce::from_slice(&raw).to_owned();
     match cipher.encrypt(&nonce, plaintext) {
-        Ok(v) => v,
+        Ok(v) => {
+            let mut out = raw.to_vec();
+            out.extend_from_slice(&v);
+            out
+        }
         Err(_) => plaintext.to_vec(),
     }
 }
 
-pub(crate) fn decrypt_payload(ciphertext: &[u8], key: &[u8; 32], header: &Ipv7Header, did_dst: &str) -> Option<Vec<u8>> {
+pub(crate) fn decrypt_payload(ciphertext: &[u8], key: &[u8; 32]) -> Option<Vec<u8>> {
+    if ciphertext.len() < NONCE_LEN {
+        return None;
+    }
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
-    let nonce = Nonce::from_slice(&build_nonce(header, did_dst)).to_owned();
-    cipher.decrypt(&nonce, ciphertext).ok()
+    let nonce = Nonce::from_slice(&ciphertext[..NONCE_LEN]).to_owned();
+    cipher.decrypt(&nonce, &ciphertext[NONCE_LEN..]).ok()
+}
+
+/// Identificador anti-replay: el nonce transmitido cuando el payload viene
+/// cifrado, o un hash del encabezado y del contenido cuando viaja en claro.
+pub(crate) fn replay_id(pkt: &Packet, encrypted: bool) -> u64 {
+    if encrypted && pkt.payload.len() >= NONCE_LEN {
+        let mut id = [0u8; 8];
+        id.copy_from_slice(&pkt.payload[4..12]);
+        return u64::from_be_bytes(id) ^ ((fnv1a_32(&pkt.payload[..4]) as u64) << 32);
+    }
+    let mut buf = pkt.header.pack().to_be_bytes().to_vec();
+    buf.extend_from_slice(pkt.did_src.as_bytes());
+    buf.extend_from_slice(&pkt.payload);
+    let lo = fnv1a_32(&buf) as u64;
+    buf.reverse();
+    ((fnv1a_32(&buf) as u64) << 32) | lo
 }
 
 pub(crate) fn serialize(pkt: &Packet) -> Vec<u8> {

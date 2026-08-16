@@ -68,6 +68,8 @@ Este archivo resume lo que ya está implementado y lo que falta para tener una a
 
 - [x] Scripts de rutas para Windows (`routes.ps1`) y Linux (`routes.sh`).
 - [x] Adaptador TUN creado y verificado en Windows con Wintun.
+- [x] Tráfico IP real extremo a extremo verificado entre dos nodos (`test-two-nodes.sh`).
+- [x] Salida a internet a través del túnel con un nodo gateway (`gateway.sh`, `gateway.ps1`, verificado con `test-gateway.sh`).
 - [ ] Configuración automática de rutas dentro del binario — *futuro*.
 - [ ] DNS interno para resolver nombres a DIDs — *futuro*.
 - [ ] MTU discovery real por ruta — *futuro*.
@@ -89,10 +91,12 @@ Este archivo resume lo que ya está implementado y lo que falta para tener una a
 IPv7-SIMBI ya es una **VPN P2P privada y cifrada** entre nodos Windows y Linux. El usuario la descarga, configura con doble click en `setup.bat`/`setup.sh`, e inicia con `run-first.bat`/`run-first.sh` (requiere administrador en Windows).
 
 Pruebas realizadas:
-- Build release limpio (`cargo build --release`).
+- Build release limpio y sin warnings (`cargo build --release`), Linux y Windows (`x86_64-pc-windows-gnu`).
 - `ipv7_simbi.exe --help` y `--demo` responden.
 - `run-first.bat` con privilegios de administrador crea el adaptador `ipv7` (status `Up`).
 - `wintun.dll` extraída de `wintun-0.14.1.zip` y desplegada junto al ejecutable.
+- `sudo ./test-two-nodes.sh`: ping ICMP entre `10.0.0.1` y `10.0.0.2` sobre el túnel, 0% de pérdida.
+- `sudo ./test-gateway.sh`: `ping 8.8.8.8` y `HTTP 200` de example.com desde el nodo A saliendo por el NAT del nodo B.
 
 Documentación:
 - `VPN.md` — definición de la VPN y mejoras sobre IPv4/IPv6.
