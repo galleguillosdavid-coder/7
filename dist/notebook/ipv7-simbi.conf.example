@@ -41,3 +41,9 @@ IPV7_TUN_MTU = "1400"
 
 # Archivo de logs
 IPV7_LOG = "ipv7-simbi.log"
+
+# Panel de estado local en http://127.0.0.1:7777 (IPV7_UI = "0" lo apaga)
+IPV7_UI = "7777"
+
+# Traza cada paquete en el log. Cuesta rendimiento: solo para depurar.
+IPV7_VERBOSE = "0"

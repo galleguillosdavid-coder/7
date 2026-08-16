@@ -193,14 +193,22 @@ pub(crate) fn replay_id(pkt: &Packet, encrypted: bool) -> u64 {
 }
 
 pub(crate) fn serialize(pkt: &Packet) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.extend_from_slice(&pkt.header.pack().to_be_bytes());
+    serialize_with(pkt, &pkt.payload)
+}
+
+/// Serializa el paquete sustituyendo el payload, sin copiar el original.
+pub(crate) fn serialize_with(pkt: &Packet, payload: &[u8]) -> Vec<u8> {
+    let mut header = pkt.header.pack();
+    header &= !(0xFFFFu64 << 32);
+    header |= (payload.len() as u64 & 0xFFFF) << 32;
+    let mut v = Vec::with_capacity(payload.len() + pkt.did_src.len() + pkt.did_dst.len() + 13);
+    v.extend_from_slice(&header.to_be_bytes());
     v.push(pkt.did_src.len() as u8);
     v.extend_from_slice(pkt.did_src.as_bytes());
     v.push(pkt.did_dst.len() as u8);
     v.extend_from_slice(pkt.did_dst.as_bytes());
-    v.extend_from_slice(&pkt.header.length.to_be_bytes());
-    v.extend_from_slice(&pkt.payload);
+    v.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    v.extend_from_slice(payload);
     let crc = crc16_ccitt(&v);
     v.extend_from_slice(&crc.to_be_bytes());
     v

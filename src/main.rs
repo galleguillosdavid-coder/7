@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::io::{self, BufRead};
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
@@ -11,6 +11,7 @@ mod packet;
 mod router;
 mod stun;
 mod tun;
+mod ui;
 
 use config::*;
 use packet::*;
@@ -72,6 +73,8 @@ fn run_demo() {
             key: None,
             seen: Arc::new(Mutex::new(HashMap::new())),
             seen_window: 60_000,
+            verbose: true,
+            stats: Arc::new(Stats::default()),
         };
         let tx = log_tx.clone();
         let (data_tx, _data_rx) = mpsc::channel::<Vec<u8>>();
@@ -117,6 +120,8 @@ fn run_demo() {
 fn run_node(id: &str, bind: &str) {
     let (log_tx, log_rx) = mpsc::channel::<String>();
     let log_path = env::var("IPV7_LOG").unwrap_or_else(|_| format!("ipv7-simbi-{}.log", id));
+    let recent = Arc::new(Mutex::new(VecDeque::<String>::new()));
+    let recent_log = recent.clone();
     thread::spawn(move || {
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
@@ -129,6 +134,11 @@ fn run_node(id: &str, bind: &str) {
             if let Some(ref mut f) = file {
                 let _ = writeln!(f, "{}", msg);
             }
+            let mut r = recent_log.lock().unwrap();
+            if r.len() == 40 {
+                r.pop_front();
+            }
+            r.push_back(msg);
         }
     });
     let mut peers_map = HashMap::new();
@@ -196,6 +206,10 @@ fn run_node(id: &str, bind: &str) {
         println!("[stun] dirección pública descubierta: {}", addr);
     }
 
+    // El log por paquete cuesta mas que el reenvio: solo con IPV7_VERBOSE.
+    let verbose = env::var("IPV7_VERBOSE").map(|v| v != "0").unwrap_or(false);
+    let stats = Arc::new(Stats::default());
+
     let psk = env::var("IPV7_PSK").unwrap_or_default();
     let key = if psk.is_empty() { None } else { Some(derive_key(&psk)) };
     let is_tracker = env::var("IPV7_TRACKER").is_ok();
@@ -223,6 +237,8 @@ fn run_node(id: &str, bind: &str) {
         key,
         seen: Arc::new(Mutex::new(HashMap::new())),
         seen_window: 60_000,
+        verbose,
+        stats: stats.clone(),
     };
     let chat_dst = env::var("IPV7_CHAT_DST").ok();
     let chat_id = cfg.id.clone();
@@ -241,13 +257,36 @@ fn run_node(id: &str, bind: &str) {
     let tun_router = cfg.bind;
     let tunnel_peer = env::var("IPV7_TUNNEL_PEER").ok();
     let tunnel_bind = env::var("IPV7_TUNNEL_BIND").ok();
+    // Panel local de estado. IPV7_UI=0 lo apaga.
+    let ui_port: Option<u16> = match env::var("IPV7_UI").as_deref() {
+        Ok("0") | Ok("off") | Ok("no") => None,
+        Ok(v) => v.parse().ok().or(Some(7777)),
+        Err(_) => Some(7777),
+    };
     let tunnel_dst = env::var("IPV7_TUNNEL_DST").ok();
     let ping_peers: Vec<(u8, SocketAddr)> = cfg.peers.iter().map(|(p, a)| (*p, *a)).collect();
     let ping_dynamic = dynamic.clone();
     let ping_last = last_seen.clone();
     let ping_id = cfg.id.clone();
     let ping_nonce = cfg.nonce;
+    let ui_peers = ping_peers.clone();
+    let ui_latencies = cfg.latencies.clone();
     println!("[{}] IPv7-SIMBI router en {} - Ctrl+C para salir", id, bind);
+    if let Some(port) = ui_port {
+        ui::start(
+            port,
+            ui::UiState {
+                id: id.to_string(),
+                bind: bind.to_string(),
+                tun: tunnel_bind.clone().unwrap_or_else(|| "sin tunel".to_string()),
+                peers: ui_peers,
+                encrypted: key.is_some(),
+                stats: stats.clone(),
+                latencies: ui_latencies,
+                log: recent,
+            },
+        );
+    }
     let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>();
     let (control_tx, control_rx) = mpsc::channel::<(Packet, SocketAddr)>();
     let tx = log_tx.clone();
@@ -421,7 +460,9 @@ fn print_help() {
     println!("Variables de entorno con prioridad sobre el archivo de configuracion:");
     println!("  IPV7_NODE_ID, IPV7_BIND, IPV7_PEERS, IPV7_HEAT, IPV7_PSK,");
     println!("  IPV7_STUN_SERVER, IPV7_TRACKER_ADDR, IPV7_TUNNEL_DST,");
-    println!("  IPV7_TUN_DEVICE, IPV7_TUN_ADDR, IPV7_LOG");
+    println!("  IPV7_TUN_DEVICE, IPV7_TUN_ADDR, IPV7_LOG, IPV7_UI, IPV7_VERBOSE");
+    println!();
+    println!("El panel de estado queda en http://127.0.0.1:7777 (IPV7_UI=0 lo apaga).");
 }
 
 fn main() {
