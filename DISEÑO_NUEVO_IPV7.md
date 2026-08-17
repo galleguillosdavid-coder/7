@@ -1,145 +1,161 @@
-# Diseño IPv7-SIMBI v2 — Especificación para reimplementación desde cero
+# IPv7-SIMBI v2 — Visión, principios y especificación
 
-## Contexto para la nueva IA
+## Hacia dónde queremos llegar
 
-El usuario está reconstruyendo el proyecto desde cero porque la versión anterior
-se volvió compleja y no logró cerrar el túnel P2P en una red con NAT.
-**No mires el código anterior como referencia.** Este documento es el único
-contexto que necesitás.
+Construir una **red de transporte alternativa** que mejore a IPv4/IPv6 para
+comunicación directa entre personas y dispositivos. No queremos depender de
+IPs centrales, DNS tradicional, ni de grandes backbones monolíticos.
 
-## Filosofía
+El objetivo final es una **VPN P2P privada, cifrada y sin intermediarios**
+que funcione entre Windows y Linux, conecte dos o más nodos aunque estén
+detrás de NAT, y permita navegar por internet compartiendo la conexión de
+uno de ellos.
 
-- **Menos es más.** Un solo archivo de código, no módulos separados.
-- **Reutilizar librerías.** No inventar criptografía, serialización ni drivers.
-- **Conectividad antes que velocidad.** Que el túnel funcione; la optimización
-  viene después.
-- **Administración mínima.** Un archivo de configuración simple y un solo
-  comando para correr.
+## ¿Por qué "IPv7"?
 
-## Objetivo del programa
+IPv4 se agotó. IPv6 es técnicamente bueno pero no se adoptó masivamente por
+ser demasiado disruptivo y mantener la lógica de direccionamiento jerárquico.
+IPv7 propone:
 
-Crear una VPN P2P simple entre dos nodos (Windows y/o Linux) que:
+- Direcciones más cortas y legibles.
+- NAT traversal nativo desde el diseño.
+- Cifrado obligatorio en capa de red.
+- Identidad de nodo separada de la IP física.
+- Conectividad punto a punto sin depender de servidores centrales.
 
-1. Cree un adaptador TUN virtual (`ipv7`) con IP 10.0.0.x.
-2. Escuche en un puerto UDP local.
-3. Envíe paquetes del TUN a un peer remoto cifrados con ChaCha20-Poly1305.
-4. Descifre paquetes del peer y los escriba en el TUN.
-5. Soporte NAT traversal mediante un tracker/relay público pequeño.
-6. Permita a un nodo actuar como gateway de internet para el otro (opcional).
+## Principios de diseño
 
-## Requisitos técnicos
+1. **Simplicidad absoluta.** Un solo concepto por fase. Nada de exploradores,
+   trenes bala, ni mapas de calor en el MVP.
+2. **Cifrado siempre.** Todo payload va cifrado con una PSK (después con Noise).
+3. **Identidad = DID.** Un nodo se identifica por un nombre corto (A, B, gateway),
+   no por su IP. La IP es solo un punto de encuentro.
+4. **No confiar en el camino.** El paquete cifrado viaja por UDP puro; el
+   remitente y destinatario son los únicos que lo entienden.
+5. **Resolver NAT, no ignorarlo.** El diseño parte de la premisa de que ambos
+   nodos están detrás de NAT. La solución primaria es un tracker/relay ligero.
+6. **Un solo archivo.** Todo el motor en un `main.rs` de menos de 600 líneas.
 
-- Lenguaje: **Rust** (portable, binario estático, puede usar crates `tun` y
-  `chacha20poly1305`).
-- Plataformas: Windows 10+ (Wintun) y Linux (tun/tap).
-- Conexión: UDP IPv4.
-- Cifrado: ChaCha20-Poly1305 con clave precompartida (PSK).
-- Cada paquete UDP contiene un nonce único (12 bytes), payload cifrado y tag
-  Poly1305 (16 bytes).
+## Sistema de direccionamiento de 12 símbolos
 
-## Arquitectura mínima (un solo archivo)
+Para diferenciar a IPv7 de IPv4/IPv6, se propone un espacio de direcciones
+compacto de **12 caracteres alfanuméricos en base-12**:
 
-```rust
-use std::net::UdpSocket;
-use std::sync::mpsc;
-use tun::Configuration;
-use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
-use chacha20poly1305::aead::{Aead, NewAead};
+- Símbolos permitidos: `0 1 2 3 4 5 6 7 8 9 a b`
+- Longitud fija: 12 símbolos.
+- Espacio aproximado: 12^12 ≈ 9 billones de direcciones.
+- Ejemplo: `a1b2c3d4e5f6`
 
-fn main() {
-    // 1. Leer config del entorno o de un archivo.
-    // 2. Crear TUN con la IP local.
-    // 3. Abrir socket UDP en el puerto local.
-    // 4. Configurar peer estático o conectarse al tracker.
-    // 5. Spawnear 2 hilos:
-    //    a) Leer del TUN -> cifrar -> enviar a peer.
-    //    b) Recibir del socket -> descifrar -> escribir en TUN.
-    // 6. Loop principal infinito.
-}
-```
-
-## Configuración (un solo archivo `ipv7.conf`)
+En el MVP esta dirección es solo el **DID del nodo** (identificador). Más
+adelante puede extenderse a direcciones de servicio, zonas y subredes.
 
 ```
-NODE_ID=A
+Ejemplo de DID de 12 chars:
+a1b2c3d4e5f6
+
+Se puede acortar visualmente usando prefijos para el MVP:
+A     -> a1b2c3d4e5f6
+B     -> b1a2c3d4e5f6
+GW    -> c1a2c3d4e5f6
+```
+
+## Fases de desarrollo
+
+### Fase 1 — Túnel punto a punto en LAN
+
+- Crear TUN en ambos nodos.
+- Enviar paquetes IP crudos por UDP a un peer configurado a mano.
+- Cifrar con ChaCha20-Poly1305 y PSK.
+- Sin tracker, sin STUN, sin gateway.
+
+### Fase 2 — NAT traversal con tracker
+
+- Pequeño tracker UDP en una VPS.
+- Cada nodo se registra con su DID + IP:puerto externo.
+- Cada nodo pregunta por el otro.
+- Si el túnel directo falla, el tracker retransmite (relay).
+
+### Fase 3 — Gateway a internet
+
+- Un nodo (el que tiene internet buena) comparte su conexión.
+- El otro nodo enruta todo el tráfico por el TUN.
+- En Windows: ICS. En Linux: `sysctl net.ipv4.ip_forward=1` + `iptables -t nat`.
+
+### Fase 4 — DID y base-12
+
+- Los DID se generan como 12 caracteres base-12.
+- El tracker resuelve DID a dirección IP:puerto actual.
+- Apariencia de "internet propia" dentro del TUN.
+
+### Fase 5 — Producción
+
+- Handshake Noise en lugar de PSK.
+- Autenticación por DID.
+- Posible integración con eBPF/XDP o io_uring.
+
+## Especificación técnica mínima (MVP fase 1-2)
+
+### Lenguaje y dependencias
+
+- Rust, un solo binario.
+- Crates: `tun`, `chacha20poly1305`.
+
+### Archivo de configuración
+
+```
+NODE_ID=a1b2c3d4e5f6
 BIND=0.0.0.0:9001
 PEER=140.232.64.2:53120
-PSK=mi_clave_secreta
+PSK=clave_secreta_compartida
 TUN_NAME=ipv7
 TUN_ADDR=10.0.0.2
 TUN_DST=10.0.0.1
 ```
 
-## Protocolo de paquete UDP
+### Formato de paquete UDP
 
 | Campo          | Tamaño     | Descripción                                   |
 |----------------|------------|-----------------------------------------------|
-| magic          | 4 bytes    | `0x49503637` ("IPv7" en letras codificadas)   |
+| magic          | 4 bytes    | `0x49503637` ("IPv7" en bytes)                |
 | version        | 1 byte     | 1                                             |
 | did_src_len    | 1 byte     | Longitud del DID origen                       |
 | did_dst_len    | 1 byte     | Longitud del DID destino                      |
-| nonce          | 12 bytes   | Nonce de ChaCha20-Poly1305                    |
-| did_src        | variable   | Identificador del nodo origen                 |
-| did_dst        | variable   | Identificador del nodo destino                |
-| ciphertext     | variable   | Payload original (IP) cifrado + tag 16 bytes  |
+| nonce          | 12 bytes   | Nonce ChaCha20-Poly1305                       |
+| did_src        | variable   | DID origen (hasta 12 chars)                   |
+| did_dst        | variable   | DID destino (hasta 12 chars)                  |
+| payload        | variable   | Paquete IP cifrado + tag 16 bytes             |
 
-El header **no se cifra** excepto el payload. El nonce evita replay.
+### Lógica del nodo
 
-## Reglas básicas del router
+1. Lee del TUN, cifra el paquete IP, lo envía por UDP al peer.
+2. Recibe por UDP, descifra, si el DID destino coincide con el propio lo
+   escribe en el TUN.
+3. Si el DID destino es otro y se conoce su dirección, lo reenvía.
+4. Si recibe paquete de una IP:puerto desconocida y el DID origen es
+   reconocible, guarda esa IP:puerto para responderle.
 
-1. Si recibo un paquete de una IP:puerto que no conozco, la guardo como peer
-   temporal y respondo a esa IP:puerto.
-2. Si el destino del paquete es mi DID, lo escribo en el TUN.
-3. Si el destino es otro DID y conozco su dirección, lo reenvío.
-4. Si no conozco la dirección, lo descarto.
+## Soluciones a los problemas reales
 
-## NAT traversal — el problema real
+| Problema                         | Solución                                   |
+|----------------------------------|--------------------------------------------|
+| NAT simétrico                    | Tracker/relay en VPS                       |
+| Cifrado                          | ChaCha20-Poly1305 con PSK                  |
+| Identidad                        | DID de 12 chars base-12                    |
+| Adaptador TUN en Windows         | Wintun + ejecución como admin              |
+| Gateway a internet               | IP forwarding + NAT (Linux) o ICS (Windows)|
+| Descubrimiento de peer           | Tracker central mínimo en VPS              |
 
-- Ambos nodos domésticos están detrás de NAT.
-- Los NAT simétricos cambian el puerto externo por cada destino, por lo que el
-  hole punching clásico falla.
-- **Solución mínima viable:** un tracker/relay pequeño en una VPS con IP pública.
-  - Cada nodo se registra en el tracker con su DID y su IP:puerto externo.
-  - Cada nodo consulta el tracker para obtener la IP:puerto del otro.
-  - Si el hole punching falla, el tracker hace de relay UDP (peor latencia, pero
-    funciona).
+## Advertencias
 
-## Advertencias importantes
+- IPv7 no es un estándar oficial. Es una propuesta experimental.
+- El DID base-12 es un concepto novedoso: en el MVP puede ser solo un string.
+- Wintun requiere privilegios de administrador.
+- Sin tracker en una VPS, no hay manera confiable de atravesar NAT simétrico.
+- No construir funciones avanzadas hasta que el túnel básico funcione.
 
-- **No inventar un protocolo de routing ad-hoc.** Usar el kernel del SO para
-  enrutar el tráfico dentro del TUN. El programa solo transporta paquetes IP
-  entre los dos TUN.
-- **No hardcodear IP/puerto del peer en el binario.** Usar config o tracker.
-- **El cifrado requiere PSK compartida.** Sin handshake dinámico para el MVP.
-- **Windows requiere ejecutar como administrador** para crear el TUN.
-- **Un gateway requiere que el nodo gateway tenga forwarding activado** (Linux)
-  o use ICS (Windows).
+## Mensaje final
 
-## Roadmap mínimo
-
-1. MVP: dos nodos con TUN, PSK y peer estático. Solo funciona en LAN o con un
-   nodo con IP pública.
-2. STUN: descubrir IP:puerto externo propio.
-3. Tracker: registrar y resolver peers.
-4. Relay fallback: si el túnel directo no cierra, pasar por el tracker.
-5. Gateway: un nodo comparte su internet con el otro.
-
-## Recursos recomendados para la nueva IA
-
-- Crate `tun` para crear TUN: https://docs.rs/tun
-- Crate `chacha20poly1305`: https://docs.rs/chacha20poly1305
-- Wintun: https://www.wintun.net
-- Documentación Rust std::net::UdpSocket
-
-## Límites del MVP
-
-- Sin DHT, sin mDNS, sin IPv6.
-- Sin autenticación por DID, solo PSK.
-- Sin MTU discovery, usar 1400 bytes de MTU.
-- Sin relay integrado: requiere VPS.
-
-## Mensaje final para el usuario
-
-La versión anterior fracasó principalmente porque intentó demasiadas cosas a la
-vez y no resolvió el NAT traversal. Esta especificación propone un programa
-más pequeño, medible y con un camino claro para conectar dos PCs reales.
+La versión anterior falló por acumular demasiadas ideas (modos, heat maps,
+explotadores) antes de resolver lo esencial: **túnel + NAT traversal + cifrado**.
+Este documento reconstruye el proyecto desde lo mínimo, con una visión clara
+hacia una red alternativa simple, privada y cifrada.
